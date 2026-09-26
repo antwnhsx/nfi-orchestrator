@@ -79,7 +79,6 @@ cp example.conf.sample updater.conf
 ```bash
 # Global Defaults
 BACKUP_BASE_DIR="$HOME/bot-updater/backups"
-LOG_FILE="$HOME/bot-updater/logs/orchestrator.log"
 RETENTION_DAYS=7
 
 # Target Profile: bot-1
@@ -91,6 +90,7 @@ SSH_PORT="22"
 SSH_KEY_FILE="$HOME/.ssh/nfi_orchestrator_key"
 REMOTE_BOT_DIR="/home/user/freqtrade"
 EXCLUDE_PATTERNS="user_data/data user_data/backtest_results"
+LOG_FILE="$HOME/bot-updater/logs/orchestrator.log"
 
 # API Safety Check (Leave blank to skip)
 API_HOST="100.101.102.103"
@@ -100,6 +100,12 @@ API_ENDPOINT="/api/v1/count"
 # Telegram Notifications (Optional)
 TELEGRAM_BOT_TOKEN=""
 TELEGRAM_CHAT_ID=""
+```
+
+#### To make bot-updater.sh executable, run the following command in your terminal:
+
+```bash
+chmod +x bot-updater.sh
 ```
 
 ## Usage
