@@ -25,8 +25,8 @@ It is intentionally opinionated, simple, and low-overhead and it is not designed
 
 ```text
 nfi-orchestrator/
-├── bot-updater.sh     # Main orchestration bash script
-├── updater.conf       # Multi-target configuration file
+├── bot-updater.sh        # Main orchestration bash script
+├── example.conf.sample   # Multi-target configuration file
 ├── LICENSE
 ├── README.md
 └── .gitignore
