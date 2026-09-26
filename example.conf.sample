@@ -1,0 +1,30 @@
+# Global Defaults
+BACKUP_BASE_DIR="$HOME/bot-updater/backups"
+LOG_FILE="$HOME/bot-updater/logs/updater.log"
+RETENTION_DAYS=7
+
+# Host Target Profile: bot-1
+[bot-1]
+ENABLED=true
+SSH_USER="user"
+SSH_HOST="100.101.102.103"
+SSH_PORT="22"
+SSH_KEY_FILE="$HOME/.ssh/nfi_orchestrator_key"
+REMOTE_BOT_DIR="/home/user/freqtrade"
+EXCLUDE_PATTERNS="user_data/data user_data/backtest_results user_data/logs"
+
+# API Safety check (Optional - set API_ENDPOINT="" to skip)
+API_HOST="100.101.102.103"
+API_PORT="8080"
+API_ENDPOINT="/api/v1/count"
+
+# Telegram Notifications (Optional)
+TELEGRAM_BOT_TOKEN=""
+TELEGRAM_CHAT_ID=""
+
+# Host Target Profile: second-bot (Disabled example)
+#[bot-2]
+#ENABLED=false
+#SSH_USER="ubuntu"
+#SSH_HOST="100.101.102.1"
+#...
