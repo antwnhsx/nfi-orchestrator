@@ -43,6 +43,7 @@ Ensure the local machine executing the script has:
 - `tar`
 - `find` (used for backup retention cleanup)
 - `df` / `du` (used for disk-space checks and backup size reporting)
+- `flock` (used to see if there is another instance already running)
 
 ### Configure Passwordless SSH Keys (Required for Cron)
 
