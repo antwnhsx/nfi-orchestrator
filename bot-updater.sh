@@ -131,6 +131,7 @@ fi
 : "${BACKUP_BASE_DIR:="$HOME/bot-updater/backups"}"
 : "${EXCLUDE_PATTERNS:=""}"
 : "${RETENTION_DAYS:=0}"
+: "${FORCE_UPDATE:="false"}"
 
 SSH_CMD="ssh -p $SSH_PORT"
 if [[ -n "$SSH_KEY_FILE" ]]; then
@@ -193,12 +194,18 @@ if [[ -n "${API_ENDPOINT:-}" ]]; then
   API_URL="http://${API_HOST}:${API_PORT}${API_ENDPOINT}"
   OPEN_TRADES=$(curl -s --max-time 10 "$API_URL" | grep -o '"count": *[0-9]*' | grep -o '[0-9]*' || echo "0")
 
-  if [[ "$OPEN_TRADES" -gt 0 ]]; then
-    log "WARN" "Safety check failed: $OPEN_TRADES active positions detected! Aborting update."
-    send_telegram "⚠️ Update aborted for $TARGET_SECTION: $OPEN_TRADES active positions."
-    exit 0
+  if [[ "$OPEN_TRADES" =~ ^[0-9]+$ ]] && [[ "$OPEN_TRADES" -gt 0 ]]; then
+    if [[ "$FORCE_UPDATE" == "true" ]]; then
+      log "WARN" "$OPEN_TRADES active position(s) detected, but FORCE_UPDATE=true, continuing anyway."
+      send_telegram "⚠️ Continuing update for $TARGET_SECTION despite $OPEN_TRADES active position(s) (FORCE_UPDATE enabled)."
+    else
+      log "WARN" "Safety check failed: $OPEN_TRADES active positions detected! Aborting update."
+      send_telegram "⚠️ Update aborted for $TARGET_SECTION: $OPEN_TRADES active positions."
+      exit 0
+    fi
+  else
+    log "INFO" "Safety check passed. 0 active positions."
   fi
-  log "INFO" "Safety check passed. 0 active positions."
 fi
 
 # 5. Local Storage Space Check
