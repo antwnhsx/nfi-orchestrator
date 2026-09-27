@@ -1,7 +1,3 @@
-# Global Defaults
-BACKUP_BASE_DIR="$HOME/bot-updater/backups"
-RETENTION_DAYS=7
-
 # Host Target Profile: bot-1
 [bot-1]
 ENABLED=true
@@ -10,6 +6,8 @@ SSH_HOST="100.101.102.103"
 SSH_PORT="22"
 SSH_KEY_FILE="$HOME/.ssh/nfi_orchestrator_key"
 REMOTE_BOT_DIR="/home/user/freqtrade"
+BACKUP_BASE_DIR="$HOME/bot-updater/backups"
+RETENTION_DAYS=7
 EXCLUDE_PATTERNS="user_data/data user_data/backtest_results user_data/logs"
 LOG_FILE="$HOME/bot-updater/logs/updater.log"
 FORCE_UPDATE=true
