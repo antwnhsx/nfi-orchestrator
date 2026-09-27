@@ -133,20 +133,20 @@ fi
 : "${RETENTION_DAYS:=0}"
 : "${FORCE_UPDATE:="false"}"
 
-SSH_CMD="ssh -p $SSH_PORT"
+SSH_CMD="ssh -p $SSH_PORT -o ConnectTimeout=10 -o ServerAliveInterval=15 -o ServerAliveCountMax=4 -o BatchMode=yes -o StrictHostKeyChecking=accept-new"
 if [[ -n "$SSH_KEY_FILE" ]]; then
   SSH_CMD="$SSH_CMD -i $SSH_KEY_FILE"
 fi
 SSH_CONN="$SSH_CMD $SSH_USER@$SSH_HOST"
 
-# --- Safe Execution / Recovery Hook ---
+# --- Safe Execution / Recovery Hook only on failure ---
 cleanup() {
   if [[ "$CONTAINER_STOPPED" == "true" ]]; then
     log "WARN" "Script interrupted or failed! Attempting remote container recovery..."
     $SSH_CONN "cd '$REMOTE_BOT_DIR' && ${REMOTE_COMPOSE_CMD:-docker compose} up -d" || log "ERROR" "Failed to restart remote container!"
   fi
 }
-trap cleanup EXIT
+trap '[[ $? -ne 0 ]] && cleanup' EXIT
 
 # --- Helper Functions ---
 send_telegram() {
