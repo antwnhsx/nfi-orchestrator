@@ -182,6 +182,7 @@ IS_BEHIND=$($SSH_CONN "cd '$REMOTE_BOT_DIR' && git fetch origin >/dev/null 2>&1 
 
 if [[ "$IS_BEHIND" == "no" ]]; then
   log "INFO" "Remote repository is up-to-date with upstream branch. No updates required."
+  send_telegram "Remote repository is up-to-date with upstream branch. No updates required for: $TARGET_SECTION"
   exit 0
 fi
 log "INFO" "New commits detected on upstream git repository."
@@ -237,6 +238,7 @@ log "INFO" "Backup streamed successfully."
 # 8. Apply Updates
 log "INFO" "Applying git updates on remote host..."
 exec_logged $SSH_CONN "cd '$REMOTE_BOT_DIR' && git pull"
+send_telegram "✅ Successfully updated bot instance: $TARGET_SECTION"
 
 # 9. Restart Container
 log "INFO" "Restarting remote docker container..."
@@ -247,6 +249,7 @@ CONTAINER_STOPPED=false
 if [[ "$RETENTION_DAYS" -gt 0 ]]; then
   log "INFO" "Cleaning up local backups older than $RETENTION_DAYS days..."
   find "$TARGET_BACKUP_DIR" -name "*.tar.gz" -type f -mtime +"$RETENTION_DAYS" -delete
+  send_telegram "Cleared old backups for: $TARGET_SECTION"
 fi
 
 log "INFO" "=== Update completed successfully for [$TARGET_SECTION] ==="
