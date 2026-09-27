@@ -140,6 +140,17 @@ exec_logged() {
 # 4. CONFIG LOADING & VALIDATION
 # ==============================================================================
 
+# Prevent overlapping runs for the same target.
+check_for_lock() {
+    LOCK_FILE="/tmp/bot-updater-${TARGET_SECTION}.lock"
+    exec 200>"$LOCK_FILE"
+
+    if ! flock -n 200; then
+      echo "Error: another bot-updater run for target '$TARGET_SECTION' is already in progress." >&2
+      exit 1
+    fi
+}
+
 # Parses a single INI-style section out of $file into the current shell's
 # environment via `eval`. SECURITY NOTE: as with log(), this trusts
 # the contents of the config file.
@@ -215,6 +226,11 @@ send_telegram() {
 # ==============================================================================
 
 cleanup() {
+    # if [[ -n "${LOCK_FILE:-}" ]]; then
+    #     flock -u 200 2>/dev/null || true
+    #     rm -f "$LOCK_FILE" 2>/dev/null || true
+    # fi
+
     if [[ "$CONTAINER_STOPPED" == "true" ]]; then
         log "WARN" "Script interrupted or failed! Attempting remote container recovery..."
         $SSH_CONN "cd '$REMOTE_BOT_DIR' && ${REMOTE_COMPOSE_CMD:-docker compose} up -d" \
@@ -347,6 +363,8 @@ step_retention_cleanup() {
 
 main() {
     parse_args "$@"
+
+    check_for_lock
 
     parse_config "$CONFIG_FILE" "$TARGET_SECTION"
     validate_config
