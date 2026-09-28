@@ -36,6 +36,8 @@
 #               and call it from `main()` in section 9. Keep each step
 #               self-contained and idempotent where possible.
 # ==============================================================================
+set -x
+set -v
 
 set -euo pipefail
 
@@ -125,7 +127,7 @@ log() {
 
     if [[ -n "${LOG_FILE:-}" ]]; then
         # SECURITY NOTE: `eval` here expands `~`/env vars embedded in LOG_FILE.
-        eval local log_path="$LOG_FILE"
+        local log_path="${LOG_FILE:-}"
         mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
         echo "[$timestamp] [$level] $msg" >> "$log_path"
     fi
@@ -141,7 +143,7 @@ log() {
 # Captures raw command outputs (like git pull / docker compose) and appends to log.
 exec_logged() {
     if [[ -n "${LOG_FILE:-}" ]]; then
-        eval local log_path="$LOG_FILE"
+        local log_path="${LOG_FILE:-}"
         "$@" 2>&1 | tee -a "$log_path"
     else
         "$@"
@@ -154,7 +156,10 @@ exec_logged() {
 
 # Prevent overlapping runs for the same target.
 check_for_lock() {
-    LOCK_FILE="/tmp/bot-updater-${TARGET_SECTION}.lock"
+    # LOCK_FILE="/tmp/bot-updater-${TARGET_SECTION}.lock"
+    local lock_dir="${XDG_RUNTIME_DIR:-$HOME/.cache/bot-updater}"
+    mkdir -p -m 700 "$lock_dir"
+    LOCK_FILE="${lock_dir}/bot-updater-${TARGET_SECTION}.lock"
     exec 200>"$LOCK_FILE"
 
     if ! flock -n 200; then
