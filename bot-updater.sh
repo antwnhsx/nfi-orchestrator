@@ -43,7 +43,11 @@ set -euo pipefail
 # 1. GLOBALS & DEFAULTS
 # ==============================================================================
 
-CONFIG_FILE="./updater.conf"
+# Resolve script directory robustly regardless of how it's invoked (relative/absolute)
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Default config path is now tied to the script's directory, not CWD
+CONFIG_FILE="${SCRIPT_DIR}/updater.conf"
 DRY_RUN=false
 VERBOSITY="normal"     # quiet, normal, verbose
 DEBUG_MODE=false
@@ -62,8 +66,9 @@ TARGET_BACKUP_DIR=""
 # ==============================================================================
 
 usage() {
-    cat <<EOF
+cat <<EOF
 Usage: $(basename "$0") [OPTIONS] -t <target_profile>
+
 
 Options:
   -t, --target <name>   Section target name in configuration file (Required)
@@ -74,14 +79,18 @@ Options:
   -D, --debug           Enable debug-level output (also via DEBUG=1)
   -h, --help            Show this help menu
 EOF
-    exit 1
+exit 1
 }
 
 parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            -t|--target) TARGET_SECTION="$2"; shift 2 ;;
-            -c|--config) CONFIG_FILE="$2"; shift 2 ;;
+            -t|--target) 
+                [[ $# -lt 2 ]] && { echo "Error: Missing value for $1"; usage; }
+                TARGET_SECTION="$2"; shift 2 ;;
+            -c|--config) 
+                [[ $# -lt 2 ]] && { echo "Error: Missing value for $1"; usage; }
+                CONFIG_FILE="$2"; shift 2 ;;
             -d|--dry-run) DRY_RUN=true; shift ;;
             -v|--verbose) VERBOSITY="verbose"; shift ;;
             -q|--quiet) VERBOSITY="quiet"; shift ;;
@@ -94,6 +103,12 @@ parse_args() {
     if [[ -z "$TARGET_SECTION" ]]; then
         echo "Error: Target profile (-t|--target) is required." >&2
         usage
+    fi
+
+    # Resolve relative config paths to absolute paths immediately after parsing.
+    # This prevents CWD drift from breaking the script during execution.
+    if [[ ! "${CONFIG_FILE}" == /* ]]; then
+        CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
     fi
 }
 
@@ -110,9 +125,6 @@ log() {
 
     if [[ -n "${LOG_FILE:-}" ]]; then
         # SECURITY NOTE: `eval` here expands `~`/env vars embedded in LOG_FILE.
-        # Preserved from the original for behavioral parity; if LOG_FILE ever
-        # becomes user-influenced (vs. trusted config), replace with a safe
-        # tilde/env expansion instead of eval.
         eval local log_path="$LOG_FILE"
         mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
         echo "[$timestamp] [$level] $msg" >> "$log_path"
@@ -146,14 +158,12 @@ check_for_lock() {
     exec 200>"$LOCK_FILE"
 
     if ! flock -n 200; then
-      echo "Error: another bot-updater run for target '$TARGET_SECTION' is already in progress." >&2
-      exit 1
+        echo "Error: another bot-updater run for target '$TARGET_SECTION' is already in progress." >&2
+        exit 1
     fi
 }
 
-# Parses a single INI-style section out of $file into the current shell's
-# environment via `eval`. SECURITY NOTE: as with log(), this trusts
-# the contents of the config file.
+# Parses a single INI-style section out of $file into the current shell's environment via `eval`.
 parse_config() {
     local file="$1"
     local section="$2"
@@ -163,13 +173,19 @@ parse_config() {
         exit 1
     fi
 
+    # Validate that the requested section exists before evaluating to avoid empty variable pollution
+    if ! grep -q "^\\[$section\\]" "$file"; then
+        echo "Error: Section [$section] not found in config file." >&2
+        exit 1
+    fi
+
     eval "$(awk -F '=' -v target="[$section]" '
         BEGIN { in_target=0 }
         /^\[/ { in_target = ($0 == target) }
         in_target && /^[^#;]/ && /=/ {
-          gsub(/[ \t]+$/, "", $1); gsub(/^[ \t]+/, "", $1);
-          gsub(/[ \t]+$/, "", $2); gsub(/^[ \t]+/, "", $2);
-          print $1 "=" $2
+            gsub(/[ \t]+$/, "", $1); gsub(/^[ \t]+/, "", $1);
+            gsub(/[ \t]+$/, "", $2); gsub(/^[ \t]+/, "", $2);
+            print $1 "=" $2
         }
       ' "$file")"
 }
@@ -264,8 +280,7 @@ step_detect_compose() {
     log "DEBUG" "Using remote compose command: '$REMOTE_COMPOSE_CMD'"
 }
 
-# Returns via exit code semantics through a global for simplicity: sets
-# IS_BEHIND=yes/no. Exits 0 early if already up to date.
+# Returns via exit code semantics through a global for simplicity: sets IS_BEHIND=yes/no. Exits 0 early if already up to date.
 step_check_git_updates() {
     log "INFO" "Checking remote repository for git updates..."
     IS_BEHIND=$($SSH_CONN "cd '$REMOTE_BOT_DIR' && git fetch origin >/dev/null 2>&1 && LOCAL=\$(git rev-parse HEAD) && REMOTE=\$(git rev-parse @{u}) && [ \$LOCAL != \$REMOTE ] && echo 'yes' || echo 'no'")
