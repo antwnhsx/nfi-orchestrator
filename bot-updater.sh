@@ -107,6 +107,11 @@ parse_args() {
         usage
     fi
 
+    if [[ ! "$TARGET_SECTION" =~ ^[A-Za-z0-9_-][A-Za-z0-9._-]*$ ]]; then
+        echo "Error: Invalid target name '$TARGET_SECTION'." >&2
+        exit 1
+    fi
+
     # Resolve relative config paths to absolute paths immediately after parsing.
     # This prevents CWD drift from breaking the script during execution.
     if [[ ! "${CONFIG_FILE}" == /* ]]; then
