@@ -26,7 +26,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="${SCRIPT_DIR}/updater.conf"
 DRY_RUN=false
-VERBOSITY="normal"     # quiet, normal, verbose
+VERBOSITY="verbose"
 DEBUG_MODE=false
 
 # Auto-enable debug mode if DEBUG environment variable is set to 1
@@ -121,25 +121,29 @@ log() {
 
     # Console Output Routing
     case "$level" in
-        DEBUG)
-            [[ "$DEBUG_MODE" == "true" ]] && echo "[$timestamp] [DEBUG] $msg"
-            ;;
-        INFO)
-            [[ "$VERBOSITY" != "quiet" ]] && echo "[$timestamp] [INFO] $msg"
-            ;;
-        WARN)
-            if [[ "$VERBOSITY" != "quiet" ]]; then
-                echo "[$timestamp] [WARN] $msg"
-            else
-                echo "[$timestamp] [WARN] $msg" >&2
-            fi
-            ;;
-        ERROR)
-            echo "[$timestamp] [ERROR] $msg" >&2
-            # Automatically dispatch critical errors to Telegram
-            notify_telegram "🚨 [ERROR] $msg"
-            ;;
-    esac
+            DEBUG)
+                if [[ "$DEBUG_MODE" == "true" ]]; then
+                    echo "[$timestamp] [DEBUG] $msg"
+                fi
+                ;;
+            INFO)
+                if [[ "$VERBOSITY" != "quiet" ]]; then
+                    echo "[$timestamp] [INFO] $msg"
+                fi
+                ;;
+            WARN)
+                if [[ "$VERBOSITY" != "quiet" ]]; then
+                    echo "[$timestamp] [WARN] $msg"
+                else
+                    echo "[$timestamp] [WARN] $msg" >&2
+                fi
+                ;;
+            ERROR)
+                echo "[$timestamp] [ERROR] $msg" >&2
+                # Automatically dispatch critical errors to Telegram
+                notify_telegram "🚨 [ERROR] $msg"
+                ;;
+        esac
 }
 
 # Captures command outputs and mirrors to log file if configured
