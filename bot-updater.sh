@@ -328,10 +328,20 @@ step_check_connectivity() {
 }
 
 step_detect_compose() {
-    REMOTE_COMPOSE_CMD=$($SSH_CONN "if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then echo 'docker compose'; elif command -v docker-compose >/dev/null 2>&1; then echo 'docker-compose'; fi")
+    REMOTE_COMPOSE_CMD=$($SSH_CONN '
+        if command -v podman >/dev/null 2>&1 && podman compose version >/dev/null 2>&1; then
+            echo "podman compose"
+        elif command -v podman-compose >/dev/null 2>&1; then
+            echo "podman-compose"
+        elif command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then
+            echo "docker compose"
+        elif command -v docker-compose >/dev/null 2>&1; then
+            echo "docker-compose"
+        fi
+    ')
 
     if [[ -z "$REMOTE_COMPOSE_CMD" ]]; then
-        log "ERROR" "Neither 'docker compose' nor 'docker-compose' is installed on remote host."
+        log "ERROR" "No valid compose tool found on remote host (checked: podman compose, podman-compose, docker compose, docker-compose)."
         exit 1
     fi
     log "DEBUG" "Using remote compose command: '$REMOTE_COMPOSE_CMD'"
