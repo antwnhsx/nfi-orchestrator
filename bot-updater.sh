@@ -15,29 +15,7 @@
 #               -v, --verbose         Enable verbose log output to stdout
 #               -q, --quiet           Suppress non-error output to stdout
 #               -D, --debug           Enable debug-level output (also via DEBUG=1)
-#
-# Environment Variables:
-#               DEBUG         Set to 1 to enable debug mode
-#
-# Structure:    This script is organized into clearly separated sections so
-#               new functionality can be added without touching unrelated
-#               code:
-#                 1. Globals & Defaults
-#                 2. CLI Parsing
-#                 3. Logging Engine
-#                 4. Config Loading & Validation
-#                 5. SSH / Remote Execution Helpers
-#                 6. Notification Helpers
-#                 7. Safety / Recovery (trap + cleanup)
-#                 8. Workflow Steps (one function per numbered step)
-#                 9. main() — orchestrates the steps in order
-#
-#               To add a new step: write a `step_xxx()` function in section 8
-#               and call it from `main()` in section 9. Keep each step
-#               self-contained and idempotent where possible.
 # ==============================================================================
-set -x
-set -v
 
 set -euo pipefail
 
@@ -45,20 +23,23 @@ set -euo pipefail
 # 1. GLOBALS & DEFAULTS
 # ==============================================================================
 
-# Resolve script directory robustly regardless of how it's invoked (relative/absolute)
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-# Default config path is now tied to the script's directory, not CWD
 CONFIG_FILE="${SCRIPT_DIR}/updater.conf"
 DRY_RUN=false
 VERBOSITY="normal"     # quiet, normal, verbose
 DEBUG_MODE=false
-[[ "${DEBUG:-0}" == "1" ]] && DEBUG_MODE=true
+
+# Auto-enable debug mode if DEBUG environment variable is set to 1
+if [[ "${DEBUG:-0}" == "1" ]]; then
+    DEBUG_MODE=true
+    VERBOSITY="verbose"
+fi
+
 TARGET_SECTION=""
 CONTAINER_STOPPED=false
 readonly MIN_FREE_DISK_KB=512000   # 500 MB minimum requirement
 
-# Populated later
+# Runtime variables
 SSH_CONN=""
 REMOTE_COMPOSE_CMD=""
 TARGET_BACKUP_DIR=""
@@ -71,14 +52,13 @@ usage() {
 cat <<EOF
 Usage: $(basename "$0") [OPTIONS] -t <target_profile>
 
-
 Options:
   -t, --target <name>   Section target name in configuration file (Required)
   -c, --config <path>   Path to configuration file (Default: ./updater.conf)
   -d, --dry-run         Simulate steps without making changes
   -v, --verbose         Enable verbose log output to stdout
   -q, --quiet           Suppress non-error output to stdout
-  -D, --debug           Enable debug-level output (also via DEBUG=1)
+  -D, --debug           Enable debug output
   -h, --help            Show this help menu
 EOF
 exit 1
@@ -88,19 +68,24 @@ parse_args() {
     while [[ $# -gt 0 ]]; do
         case "$1" in
             -t|--target) 
-                [[ $# -lt 2 ]] && { echo "Error: Missing value for $1"; usage; }
+                [[ $# -lt 2 ]] && { echo "Error: Missing value for $1" >&2; usage; }
                 TARGET_SECTION="$2"; shift 2 ;;
             -c|--config) 
-                [[ $# -lt 2 ]] && { echo "Error: Missing value for $1"; usage; }
+                [[ $# -lt 2 ]] && { echo "Error: Missing value for $1" >&2; usage; }
                 CONFIG_FILE="$2"; shift 2 ;;
             -d|--dry-run) DRY_RUN=true; shift ;;
             -v|--verbose) VERBOSITY="verbose"; shift ;;
             -q|--quiet) VERBOSITY="quiet"; shift ;;
-            -D|--debug) DEBUG_MODE=true; shift ;;
+            -D|--debug) DEBUG_MODE=true; VERBOSITY="verbose"; shift ;;
             -h|--help) usage ;;
-            *) echo "Unknown parameter: $1"; usage ;;
+            *) echo "Unknown parameter: $1" >&2; usage ;;
         esac
     done
+
+    # Enable execution tracing strictly when debug mode is enabled
+    if [[ "$DEBUG_MODE" == "true" ]]; then
+        set -vx
+    fi
 
     if [[ -z "$TARGET_SECTION" ]]; then
         echo "Error: Target profile (-t|--target) is required." >&2
@@ -112,8 +97,6 @@ parse_args() {
         exit 1
     fi
 
-    # Resolve relative config paths to absolute paths immediately after parsing.
-    # This prevents CWD drift from breaking the script during execution.
     if [[ ! "${CONFIG_FILE}" == /* ]]; then
         CONFIG_FILE="$(cd "$(dirname "$CONFIG_FILE")" && pwd)/$(basename "$CONFIG_FILE")"
     fi
@@ -130,26 +113,42 @@ log() {
     local timestamp
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
 
+    # Always write to file log if LOG_FILE is defined
     if [[ -n "${LOG_FILE:-}" ]]; then
-        local log_path="${LOG_FILE}"
-        mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
-        echo "[$timestamp] [$level] $msg" >> "$log_path"
+        mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+        echo "[$timestamp] [$level] $msg" >> "$LOG_FILE"
     fi
 
-    case "$VERBOSITY" in
-        quiet)   [[ "$level" == "ERROR" ]] && echo "[$level] $msg" >&2 ;;
-        normal)  [[ "$level" != "DEBUG" || "$DEBUG_MODE" == "true" ]] && echo "[$timestamp] [$level] $msg" ;;
-        verbose) echo "[$timestamp] [$level] $msg" ;;
+    # Determine standard stream outputs based on level and verbosity
+    case "$level" in
+        DEBUG)
+            if [[ "$DEBUG_MODE" == "true" ]]; then
+                echo "[$timestamp] [DEBUG] $msg"
+            fi
+            ;;
+        INFO)
+            if [[ "$VERBOSITY" != "quiet" ]]; then
+                echo "[$timestamp] [INFO] $msg"
+            fi
+            ;;
+        WARN)
+            if [[ "$VERBOSITY" != "quiet" ]]; then
+                echo "[$timestamp] [WARN] $msg"
+            else
+                echo "[$timestamp] [WARN] $msg" >&2
+            fi
+            ;;
+        ERROR)
+            echo "[$timestamp] [ERROR] $msg" >&2
+            ;;
     esac
-    return 0
 }
 
-# Captures raw command outputs (like git pull / docker compose) and appends to log.
+# Captures command outputs and mirrors to log file if configured
 exec_logged() {
     if [[ -n "${LOG_FILE:-}" ]]; then
-        local log_path="${LOG_FILE}"
-        mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
-        "$@" 2>&1 | tee -a "$log_path"
+        mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+        "$@" 2>&1 | tee -a "$LOG_FILE"
     else
         "$@"
     fi
@@ -159,7 +158,6 @@ exec_logged() {
 # 4. CONFIG LOADING & VALIDATION
 # ==============================================================================
 
-# Prevent overlapping runs for the same target.
 check_for_lock() {
     local lock_dir="${XDG_RUNTIME_DIR:-$HOME/.cache/bot-updater}"
     mkdir -p -m 700 "$lock_dir"
@@ -167,7 +165,7 @@ check_for_lock() {
     exec 200>"$LOCK_FILE"
 
     if ! flock -n 200; then
-        echo "Error: another bot-updater run for target '$TARGET_SECTION' is already in progress." >&2
+        log "ERROR" "Another bot-updater run for target '$TARGET_SECTION' is already in progress."
         exit 1
     fi
 }
@@ -177,12 +175,12 @@ parse_config() {
     local section="$2"
 
     if [[ ! -f "$file" ]]; then
-        echo "Error: Config file '$file' not found." >&2
+        log "ERROR" "Config file '$file' not found."
         exit 1
     fi
 
     if ! grep -q "^\\[$section\\]" "$file"; then
-        echo "Error: Section [$section] not found in config file." >&2
+        log "ERROR" "Section [$section] not found in config file."
         exit 1
     fi
 
@@ -190,13 +188,9 @@ parse_config() {
     local line key value
 
     while IFS= read -r line || [[ -n "$line" ]]; do
-        # Trim leading and trailing whitespace
         line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
-
-        # Skip blank lines and comments
         [[ -z "$line" || "$line" =~ ^[#\;] ]] && continue
 
-        # Handle section headers
         if [[ "$line" =~ ^\[(.*)\]$ ]]; then
             if [[ "${BASH_REMATCH[1]}" == "$section" ]]; then
                 in_section=1
@@ -206,28 +200,21 @@ parse_config() {
             continue
         fi
 
-        # Parse key-value pairs if inside target section
         if (( in_section )) && [[ "$line" =~ ^([A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
             key="${BASH_REMATCH[1]}"
             value="${BASH_REMATCH[2]}"
-
-            # Strip outer double or single quotes
             value="${value#\"}"
             value="${value%\"}"
             value="${value#\'}"
             value="${value%\'}"
-
-            # Safely expand $HOME and ~ without running eval
             value="${value//\$HOME/$HOME}"
             value="${value/#\~/$HOME}"
 
-            # Dynamically set variable globally
             declare -g "$key=$value"
         fi
     done < "$file"
 }
 
-# Sets defaults for optional keys and hard-fails on missing required keys.
 validate_config() {
     log "DEBUG" "Loaded config section [$TARGET_SECTION] from $CONFIG_FILE"
 
@@ -247,7 +234,7 @@ validate_config() {
     : "${RETENTION_DAYS:=0}"
     : "${FORCE_UPDATE:="false"}"
 
-    log "DEBUG" "Config: SSH_HOST=$SSH_HOST SSH_PORT=$SSH_PORT REMOTE_BOT_DIR=$REMOTE_BOT_DIR BACKUP_BASE_DIR=$BACKUP_BASE_DIR RETENTION_DAYS=$RETENTION_DAYS FORCE_UPDATE=$FORCE_UPDATE"
+    log "DEBUG" "Config settings: SSH_HOST=$SSH_HOST SSH_PORT=$SSH_PORT REMOTE_BOT_DIR=$REMOTE_BOT_DIR BACKUP_BASE_DIR=$BACKUP_BASE_DIR RETENTION_DAYS=$RETENTION_DAYS FORCE_UPDATE=$FORCE_UPDATE"
 }
 
 # ==============================================================================
@@ -312,7 +299,6 @@ step_detect_compose() {
     log "DEBUG" "Using remote compose command: '$REMOTE_COMPOSE_CMD'"
 }
 
-# Returns via exit code semantics through a global for simplicity: sets IS_BEHIND=yes/no. Exits 0 early if already up to date.
 step_check_git_updates() {
     log "INFO" "Checking remote repository for git updates..."
     IS_BEHIND=$($SSH_CONN "cd '$REMOTE_BOT_DIR' && git fetch origin >/dev/null 2>&1 && LOCAL=\$(git rev-parse HEAD) && REMOTE=\$(git rev-parse @{u}) && [ \$LOCAL != \$REMOTE ] && echo 'yes' || echo 'no'")
