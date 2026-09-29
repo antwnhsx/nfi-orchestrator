@@ -113,23 +113,19 @@ log() {
     local timestamp
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
 
-    # Always write to file log if LOG_FILE is defined
+    # File Logging
     if [[ -n "${LOG_FILE:-}" ]]; then
         mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
         echo "[$timestamp] [$level] $msg" >> "$LOG_FILE"
     fi
 
-    # Determine standard stream outputs based on level and verbosity
+    # Console Output Routing
     case "$level" in
         DEBUG)
-            if [[ "$DEBUG_MODE" == "true" ]]; then
-                echo "[$timestamp] [DEBUG] $msg"
-            fi
+            [[ "$DEBUG_MODE" == "true" ]] && echo "[$timestamp] [DEBUG] $msg"
             ;;
         INFO)
-            if [[ "$VERBOSITY" != "quiet" ]]; then
-                echo "[$timestamp] [INFO] $msg"
-            fi
+            [[ "$VERBOSITY" != "quiet" ]] && echo "[$timestamp] [INFO] $msg"
             ;;
         WARN)
             if [[ "$VERBOSITY" != "quiet" ]]; then
@@ -140,6 +136,8 @@ log() {
             ;;
         ERROR)
             echo "[$timestamp] [ERROR] $msg" >&2
+            # Automatically dispatch critical errors to Telegram
+            notify_telegram "🚨 [ERROR] $msg"
             ;;
     esac
 }
@@ -188,7 +186,8 @@ parse_config() {
     local line key value
 
     while IFS= read -r line || [[ -n "$line" ]]; do
-        line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
         [[ -z "$line" || "$line" =~ ^[#\;] ]] && continue
 
         if [[ "$line" =~ ^\[(.*)\]$ ]]; then
@@ -253,12 +252,38 @@ init_ssh() {
 # 6. NOTIFICATION HELPERS
 # ==============================================================================
 
-send_telegram() {
+notify_telegram() {
     local msg="$1"
-    if [[ -n "${TELEGRAM_BOT_TOKEN:-}" ]] && [[ -n "${TELEGRAM_CHAT_ID:-}" ]]; then
-        curl -s -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
-            -d "chat_id=${TELEGRAM_CHAT_ID}" -d "text=${msg}" > /dev/null || true
-    fi
+    
+    # Skip if credentials are missing
+    [[ -z "${TELEGRAM_BOT_TOKEN:-}" || -z "${TELEGRAM_CHAT_ID:-}" ]] && return 0
+
+    # Non-blocking async dispatch with background execution to avoid slowing workflow
+    (
+        curl -s -m 5 -X POST "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/sendMessage" \
+            -d "chat_id=${TELEGRAM_CHAT_ID}" \
+            -d "text=${msg}" > /dev/null 2>&1
+    ) &
+}
+
+# High-level wrapper for unified dispatch
+notify() {
+    local level="$1"
+    shift
+    local msg="$*"
+
+    # First record to standard local log engine
+    log "$level" "$msg"
+
+    # Route specific event levels to Telegram
+    case "$level" in
+        WARN|ERROR)
+            notify_telegram "[$level] [$TARGET_SECTION] $msg"
+            ;;
+        EVENT)
+            notify_telegram "[$TARGET_SECTION] $msg"
+            ;;
+    esac
 }
 
 # ==============================================================================
@@ -266,15 +291,23 @@ send_telegram() {
 # ==============================================================================
 
 cleanup() {
+    local exit_code=$?
+    if [[ $exit_code -ne 0 ]]; then
+        notify_telegram "❌ Script failed unexpectedly with exit code $exit_code for target: $TARGET_SECTION"
+    fi
+
     if [[ "$CONTAINER_STOPPED" == "true" ]]; then
         log "WARN" "Script interrupted or failed! Attempting remote container recovery..."
-        $SSH_CONN "cd '$REMOTE_BOT_DIR' && ${REMOTE_COMPOSE_CMD:-docker compose} up -d" \
-            || log "ERROR" "Failed to restart remote container!"
+        if $SSH_CONN "cd '$REMOTE_BOT_DIR' && ${REMOTE_COMPOSE_CMD:-docker compose} up -d"; then
+            notify_telegram "🔄 Recovery successful: Container restarted on $TARGET_SECTION"
+        else
+            notify_telegram "🔥 RECOVERY FAILED: Container is offline on $TARGET_SECTION!"
+        fi
     fi
 }
 
 install_trap() {
-    trap '[[ $? -ne 0 ]] && cleanup' EXIT
+    trap cleanup EXIT
 }
 
 # ==============================================================================
@@ -301,12 +334,13 @@ step_detect_compose() {
 
 step_check_git_updates() {
     log "INFO" "Checking remote repository for git updates..."
-    IS_BEHIND=$($SSH_CONN "cd '$REMOTE_BOT_DIR' && git fetch origin >/dev/null 2>&1 && LOCAL=\$(git rev-parse HEAD) && REMOTE=\$(git rev-parse @{u}) && [ \$LOCAL != \$REMOTE ] && echo 'yes' || echo 'no'")
-    log "DEBUG" "IS_BEHIND=$IS_BEHIND"
+    local is_behind
+    is_behind=$($SSH_CONN "cd '$REMOTE_BOT_DIR' && git fetch origin >/dev/null 2>&1 && LOCAL=\$(git rev-parse HEAD) && REMOTE=\$(git rev-parse @{u}) && [ \$LOCAL != \$REMOTE ] && echo 'yes' || echo 'no'")
+    log "DEBUG" "IS_BEHIND=$is_behind"
 
-    if [[ "$IS_BEHIND" == "no" ]]; then
+    if [[ "$is_behind" == "no" ]]; then
         log "INFO" "Remote repository is up-to-date with upstream branch. No updates required."
-        send_telegram "Remote repository is up-to-date with upstream branch. No updates required for: $TARGET_SECTION"
+        notify_telegram "Remote repository is up-to-date with upstream branch. No updates required for: $TARGET_SECTION"
         exit 0
     fi
     log "INFO" "New commits detected on upstream git repository."
@@ -324,10 +358,10 @@ step_safety_check_open_trades() {
     if [[ "$open_trades" =~ ^[0-9]+$ ]] && [[ "$open_trades" -gt 0 ]]; then
         if [[ "$FORCE_UPDATE" == "true" ]]; then
             log "WARN" "$open_trades active position(s) detected, but FORCE_UPDATE=true, continuing anyway."
-            send_telegram "⚠️ Continuing update for $TARGET_SECTION despite $open_trades active position(s) (FORCE_UPDATE enabled)."
+            notify_telegram "⚠️ Continuing update for $TARGET_SECTION despite $open_trades active position(s) (FORCE_UPDATE enabled)."
         else
             log "WARN" "Safety check failed: $open_trades active positions detected! Aborting update."
-            send_telegram "⚠️ Update aborted for $TARGET_SECTION: $open_trades active positions."
+            notify_telegram "⚠️ Update aborted for $TARGET_SECTION: $open_trades active positions."
             exit 0
         fi
     else
@@ -360,13 +394,12 @@ step_backup() {
 
     log "INFO" "Streaming remote backup to $local_backup_path..."
 
-    local exclude_args=""
+    local exclude_opts=()
     for pattern in $EXCLUDE_PATTERNS; do
-        exclude_args="$exclude_args --exclude='$pattern'"
+        exclude_opts+=(--exclude="$pattern")
     done
-    log "DEBUG" "EXCLUDE_ARGS=$exclude_args"
 
-    $SSH_CONN "cd '$REMOTE_BOT_DIR' && tar $exclude_args -czf - ." > "$local_backup_path"
+    $SSH_CONN "cd '$REMOTE_BOT_DIR' && tar ${exclude_opts[*]:-} -czf - ." > "$local_backup_path"
     log "INFO" "Backup streamed successfully."
     log "DEBUG" "Backup file size: $(du -k "$local_backup_path" 2>/dev/null | awk '{print $1}')KB"
 }
@@ -387,7 +420,7 @@ step_retention_cleanup() {
 
     log "INFO" "Cleaning up local backups older than $RETENTION_DAYS days..."
     find "$TARGET_BACKUP_DIR" -name "*.tar.gz" -type f -mtime +"$RETENTION_DAYS" -delete
-    send_telegram "Cleared old backups for: $TARGET_SECTION"
+    notify_telegram "Cleared old backups for: $TARGET_SECTION"
 }
 
 # ==============================================================================
@@ -406,7 +439,7 @@ main() {
     install_trap
 
     log "INFO" "=== Starting bot-updater for [$TARGET_SECTION] ==="
-    send_telegram "Starting bot-updater for: $TARGET_SECTION"
+    notify_telegram "Starting bot-updater for: $TARGET_SECTION"
 
     step_check_connectivity
     step_detect_compose
@@ -426,7 +459,7 @@ main() {
     step_retention_cleanup
 
     log "INFO" "=== Update completed successfully for [$TARGET_SECTION] ==="
-    send_telegram "✅ Successfully updated bot instance: $TARGET_SECTION"
+    notify_telegram "✅ Successfully updated bot instance: $TARGET_SECTION"
 }
 
 main "$@"
