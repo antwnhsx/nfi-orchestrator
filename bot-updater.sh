@@ -131,8 +131,7 @@ log() {
     timestamp=$(date "+%Y-%m-%d %H:%M:%S")
 
     if [[ -n "${LOG_FILE:-}" ]]; then
-        # SECURITY NOTE: `eval` here expands `~`/env vars embedded in LOG_FILE.
-        local log_path="${LOG_FILE:-}"
+        local log_path="${LOG_FILE}"
         mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
         echo "[$timestamp] [$level] $msg" >> "$log_path"
     fi
@@ -148,7 +147,8 @@ log() {
 # Captures raw command outputs (like git pull / docker compose) and appends to log.
 exec_logged() {
     if [[ -n "${LOG_FILE:-}" ]]; then
-        local log_path="${LOG_FILE:-}"
+        local log_path="${LOG_FILE}"
+        mkdir -p "$(dirname "$log_path")" 2>/dev/null || true
         "$@" 2>&1 | tee -a "$log_path"
     else
         "$@"
@@ -161,7 +161,6 @@ exec_logged() {
 
 # Prevent overlapping runs for the same target.
 check_for_lock() {
-    # LOCK_FILE="/tmp/bot-updater-${TARGET_SECTION}.lock"
     local lock_dir="${XDG_RUNTIME_DIR:-$HOME/.cache/bot-updater}"
     mkdir -p -m 700 "$lock_dir"
     LOCK_FILE="${lock_dir}/bot-updater-${TARGET_SECTION}.lock"
@@ -173,7 +172,6 @@ check_for_lock() {
     fi
 }
 
-# Parses a single INI-style section out of $file into the current shell's environment via `eval`.
 parse_config() {
     local file="$1"
     local section="$2"
@@ -183,21 +181,50 @@ parse_config() {
         exit 1
     fi
 
-    # Validate that the requested section exists before evaluating to avoid empty variable pollution
     if ! grep -q "^\\[$section\\]" "$file"; then
         echo "Error: Section [$section] not found in config file." >&2
         exit 1
     fi
 
-    eval "$(awk -F '=' -v target="[$section]" '
-        BEGIN { in_target=0 }
-        /^\[/ { in_target = ($0 == target) }
-        in_target && /^[^#;]/ && /=/ {
-            gsub(/[ \t]+$/, "", $1); gsub(/^[ \t]+/, "", $1);
-            gsub(/[ \t]+$/, "", $2); gsub(/^[ \t]+/, "", $2);
-            print $1 "=" $2
-        }
-      ' "$file")"
+    local in_section=0
+    local line key value
+
+    while IFS= read -r line || [[ -n "$line" ]]; do
+        # Trim leading and trailing whitespace
+        line="$(echo "$line" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')"
+
+        # Skip blank lines and comments
+        [[ -z "$line" || "$line" =~ ^[#\;] ]] && continue
+
+        # Handle section headers
+        if [[ "$line" =~ ^\[(.*)\]$ ]]; then
+            if [[ "${BASH_REMATCH[1]}" == "$section" ]]; then
+                in_section=1
+            else
+                in_section=0
+            fi
+            continue
+        fi
+
+        # Parse key-value pairs if inside target section
+        if (( in_section )) && [[ "$line" =~ ^([A-Za-z0-9_]+)[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+            key="${BASH_REMATCH[1]}"
+            value="${BASH_REMATCH[2]}"
+
+            # Strip outer double or single quotes
+            value="${value#\"}"
+            value="${value%\"}"
+            value="${value#\'}"
+            value="${value%\'}"
+
+            # Safely expand $HOME and ~ without running eval
+            value="${value//\$HOME/$HOME}"
+            value="${value/#\~/$HOME}"
+
+            # Dynamically set variable globally
+            declare -g "$key=$value"
+        fi
+    done < "$file"
 }
 
 # Sets defaults for optional keys and hard-fails on missing required keys.
@@ -252,11 +279,6 @@ send_telegram() {
 # ==============================================================================
 
 cleanup() {
-    # if [[ -n "${LOCK_FILE:-}" ]]; then
-    #     flock -u 200 2>/dev/null || true
-    #     rm -f "$LOCK_FILE" 2>/dev/null || true
-    # fi
-
     if [[ "$CONTAINER_STOPPED" == "true" ]]; then
         log "WARN" "Script interrupted or failed! Attempting remote container recovery..."
         $SSH_CONN "cd '$REMOTE_BOT_DIR' && ${REMOTE_COMPOSE_CMD:-docker compose} up -d" \
