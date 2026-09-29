@@ -228,6 +228,11 @@ validate_config() {
     : "${REMOTE_BOT_DIR:?Config REMOTE_BOT_DIR missing}"
     : "${SSH_PORT:="22"}"
     : "${SSH_KEY_FILE:=""}"
+    : "${API_HOST:="127.0.0.1"}"
+    : "${API_PORT:="8080"}"
+    : "${API_ENDPOINT:="/api/v1/count"}"
+    : "${FT_USERNAME:=""}"
+    : "${FT_PASSWORD:=""}"
     : "${BACKUP_BASE_DIR:="$HOME/bot-updater/backups"}"
     : "${EXCLUDE_PATTERNS:=""}"
     : "${RETENTION_DAYS:=0}"
@@ -347,21 +352,54 @@ step_check_git_updates() {
 }
 
 step_safety_check_open_trades() {
-    [[ -z "${API_ENDPOINT:-}" ]] && return 0
+    # If API checking is explicitly not configured, skip
+    if [[ -z "${API_ENDPOINT:-}" ]]; then
+        log "INFO" "No API_ENDPOINT specified. Skipping safety check."
+        return 0
+    fi
 
-    log "INFO" "Executing safety check via API..."
-    local api_url="http://${API_HOST}:${API_PORT}${API_ENDPOINT}"
+    # Defaults and construction
+    local api_host="${API_HOST:-127.0.0.1}"
+    local api_port="${API_PORT:-8080}"
+    local api_url="http://${api_host}:${api_port}${API_ENDPOINT}"
+
+    # Build auth arguments if credentials exist
+    local auth_args=()
+    if [[ -n "${FT_USERNAME:-}" || -n "${FT_PASSWORD:-}" ]]; then
+        auth_args=(-u "${FT_USERNAME:-}:${FT_PASSWORD:-}")
+    fi
+
+    log "INFO" "Executing safety check via API ($api_url)..."
+
+    # Fetch API payload safely
+    local response
+    if ! response=$(curl -s --fail --max-time 10 "${auth_args[@]}" "$api_url" 2>/dev/null); then
+        log "ERROR" "Failed to reach Freqtrade API at $api_url (Network error, wrong credentials, or offline)."
+        notify_telegram "❌ Safety Check Failed: Cannot connect or authenticate to Freqtrade API at $api_url."
+        exit 1
+    fi
+
+    # Parse key "current" from JSON response: {"current":1,"max":6,"total_stake":53.5325}
     local open_trades
-    open_trades=$(curl -s --max-time 10 "$api_url" | grep -o '"count": *[0-9]*' | grep -o '[0-9]*' || echo "0")
+    open_trades=$(echo "$response" | grep -o '"current": *[0-9]*' | grep -o '[0-9]*' || echo "")
+
+    # Fallback/Validation if parsing failed completely
+    if [[ -z "$open_trades" ]]; then
+        log "ERROR" "Failed to parse 'current' trade count from API response: $response"
+        notify_telegram "❌ Safety Check Failed: Invalid response format from $TARGET_SECTION."
+        exit 1
+    fi
+
     log "DEBUG" "API_URL=$api_url OPEN_TRADES=$open_trades"
 
-    if [[ "$open_trades" =~ ^[0-9]+$ ]] && [[ "$open_trades" -gt 0 ]]; then
-        if [[ "$FORCE_UPDATE" == "true" ]]; then
+    # Evaluate trade count
+    if [[ "$open_trades" -gt 0 ]]; then
+        if [[ "${FORCE_UPDATE:-false}" == "true" ]]; then
             log "WARN" "$open_trades active position(s) detected, but FORCE_UPDATE=true, continuing anyway."
             notify_telegram "⚠️ Continuing update for $TARGET_SECTION despite $open_trades active position(s) (FORCE_UPDATE enabled)."
         else
-            log "WARN" "Safety check failed: $open_trades active positions detected! Aborting update."
-            notify_telegram "⚠️ Update aborted for $TARGET_SECTION: $open_trades active positions."
+            log "WARN" "Safety check failed: $open_trades active position(s) detected! Aborting update."
+            notify_telegram "ℹ️ No action taken for $TARGET_SECTION: $open_trades active position(s) open."
             exit 0
         fi
     else

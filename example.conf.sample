@@ -16,6 +16,8 @@ FORCE_UPDATE=true
 API_HOST="100.101.102.103"
 API_PORT="8080"
 API_ENDPOINT="/api/v1/count"
+FT_USERNAME=freqtrader
+FT_PASSWORD=freqtrader
 
 # Telegram Notifications (Optional)
 TELEGRAM_BOT_TOKEN=""
